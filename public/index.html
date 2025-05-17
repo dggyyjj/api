@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Speech Listener</title>
+</head>
+<body>
+  <h1>Speak something...</h1>
+  <button id="startBtn">Start Listening</button>
+  <p>Transcript: <span id="transcript"></span></p>
+  <p>Volume: <span id="volume"></span></p>
+  <p>Intensity: <span id="intensity"></span></p>
+  <p>OpenAI Reply: <span id="reply"></span></p>
+
+  <script>
+    const startBtn = document.getElementById('startBtn');
+    const transcriptEl = document.getElementById('transcript');
+    const volumeEl = document.getElementById('volume');
+    const intensityEl = document.getElementById('intensity');
+    const replyEl = document.getElementById('reply');
+
+    let recognition;
+    if ('webkitSpeechRecognition' in window) {
+      recognition = new webkitSpeechRecognition();
+    } else if ('SpeechRecognition' in window) {
+      recognition = new SpeechRecognition();
+    } else {
+      alert('Speech Recognition API not supported');
+    }
+
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    let audioContext;
+    let analyser;
+    let microphone;
+    let dataArray;
+
+    async function setupAudioProcessing() {
+      audioContext = new AudioContext();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      microphone = audioContext.createMediaStreamSource(stream);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      microphone.connect(analyser);
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+      monitorVolume();
+    }
+
+    function monitorVolume() {
+      analyser.getByteFrequencyData(dataArray);
+      // ממוצע עוצמת סאונד לתדרים
+      const avg = dataArray.reduce((a,b) => a+b, 0) / dataArray.length;
+      const volume = avg / 255; // נורמליזציה בין 0 ל-1
+      volumeEl.textContent = volume.toFixed(2);
+
+      // נניח ש-intensity = סטיית התקן של הנתונים (אפשרות אחרת להרגיש עוצמה משתנה)
+      const mean = volume;
+      const variance = dataArray.reduce((sum, val) => sum + Math.pow(val/255 - mean, 2), 0) / dataArray.length;
+      const intensity = Math.sqrt(variance);
+      intensityEl.textContent = intensity.toFixed(2);
+
+      setTimeout(monitorVolume, 100);
+    }
+
+    startBtn.onclick = async () => {
+      replyEl.textContent = '';
+      transcriptEl.textContent = '';
+      if (!audioContext) await setupAudioProcessing();
+
+      recognition.start();
+    };
+
+    recognition.onresult = event => {
+      let interimTranscript = '';
+      let finalTranscript = '';
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      transcriptEl.textContent = finalTranscript || interimTranscript;
+
+      // שליחה לשרת כל פעם שמתקבלת תוצאה סופית
+      if (finalTranscript.trim().length > 0) {
+        fetch('http://localhost:3001/api/process-speech', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            transcript: finalTranscript,
+            volume: parseFloat(volumeEl.textContent),
+            intensity: parseFloat(intensityEl.textContent),
+          })
+        }).then(res => res.json())
+          .then(data => {
+            replyEl.textContent = data.reply;
+          }).catch(console.error);
+      }
+    };
+
+    recognition.onerror = e => {
+      console.error(e);
+    };
+  </script>
+</body>
+</html>
